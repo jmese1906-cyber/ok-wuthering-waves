@@ -25,6 +25,9 @@ env:
 jobs:
   validate:
     name: 1 · Validate
+    # Personal releases need their own artifact/update destination and signing.
+    # Never run the inherited publisher against upstream repositories on a fork.
+    if: github.repository == 'ok-oldking/ok-wuthering-waves'
     runs-on: windows-latest
 
     steps:

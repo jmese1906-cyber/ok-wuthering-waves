@@ -287,3 +287,9 @@ config = {
     }
 
 }
+
+from src.personal_distribution import configure_personal_distribution
+from src.capture.bootstrap import configure_capture
+
+configure_personal_distribution(config)
+configure_capture(config)

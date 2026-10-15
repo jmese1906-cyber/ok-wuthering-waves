@@ -1,4 +1,5 @@
 import math
+import os
 import re
 import time
 from datetime import datetime, timedelta
@@ -412,13 +413,16 @@ class BaseWWTask(BaseTask):
         if not boxes:
             self.screenshot('stamina_error')
             return -1, -1, -1
-        current = 0
+        current = None
         back_up = 0
         for box in boxes:
             if match := stamina_re.search(box.name):
                 current = int(match.group(1))
             elif match := number_re.search(box.name):
                 back_up = int(match.group(1))
+        if current is None:
+            self.screenshot('stamina_value_missing')
+            return -1, -1, -1
         self.info_set('current_stamina', current)
         self.info_set('back_up_stamina', back_up)
         return current, back_up, current + back_up
@@ -426,6 +430,13 @@ class BaseWWTask(BaseTask):
     def use_stamina(self, once=60, must_use=0):
         self.sleep(1)
         current, back_up, total = self.get_stamina()
+        if current < 0:
+            raise CannotFindException('Stamina reading unavailable; no reward button was clicked')
+        no_refill = os.environ.get('OK_DAILY_NO_REFILL') == '1'
+        if no_refill:
+            if current < once:
+                raise CannotFindException('Daily verification: insufficient natural stamina; no refill allowed')
+            total = current
         if current >= once * 2:
             used = once * 2
             use_double = True
@@ -444,6 +455,9 @@ class BaseWWTask(BaseTask):
             btn = self.click_dialog_left_button()
         if self.wait_feature('gem_add_stamina', horizontal_variance=0.4, vertical_variance=0.05,
                              time_out=2, settle_time=0.5):  # 看是否需要使用备用体力
+            if no_refill:
+                self.screenshot('daily_refill_blocked')
+                raise CannotFindException('Daily verification: stamina refill dialog blocked')
             self.click_relative(0.70, 0.71, hcenter=True, after_sleep=1)  # 点击确认
             self.click_relative(0.70, 0.71, hcenter=True, after_sleep=1)
             self.back(after_sleep=1)
@@ -1112,8 +1126,43 @@ class BaseWWTask(BaseTask):
             raise_if_not_found=False,
         )
 
+    def _book_destination_state(self, frame=None):
+        frame = self.frame.copy() if frame is None else frame
+        team = self.find_one('team_close', threshold=0.8, frame=frame)
+        map_markers = [name for name in ('fast_travel_custom', 'gray_teleport', 'remove_custom')
+                       if self.find_one(name, threshold=0.8, frame=frame)]
+        if team and map_markers:
+            self.screenshot('ambiguous_book_destination', frame=frame)
+            raise CannotFindException(f'Ambiguous book destination: team and {map_markers}')
+        if team:
+            return 'team'
+        if map_markers:
+            return 'map'
+        return None
+
+    def _find_team_challenge_button(self):
+        frame = self.frame.copy()
+        if self._book_destination_state(frame) != 'team':
+            return None
+        button = self.find_one('team_start_challenge', threshold=0.8, frame=frame)
+        if button:
+            return button
+        # The bright button edge can lose texture; use its exact label only on
+        # a verified team page, within the observed bottom-right button area.
+        labels = self.ocr(0.775, 0.87, 0.95, 0.965, match='开启挑战',
+                          threshold=0.8, frame=frame)
+        return labels[0] if len(labels) == 1 else None
+
     def click_team_challenge(self):
-        self.wait_click_feature('team_start_challenge', raise_if_not_found=True, click_after_delay=0.5, after_sleep=1)
+        self.wait_until(self._find_team_challenge_button, time_out=10,
+                        settle_time=0.4, raise_if_not_found=True)
+        self.next_frame()
+        button = self._find_team_challenge_button()
+        if button is None:
+            self.screenshot('team_challenge_state_changed')
+            raise CannotFindException('Team challenge page changed before click; stopped')
+        logger.info(f'validated team challenge button {button}')
+        self.click(button, after_sleep=1)
         self.wait_click_skip_dialog_confirm()
 
     def wait_click_travel(self):
@@ -1215,9 +1264,14 @@ class BaseWWTask(BaseTask):
             target = max(btns, key=lambda box: box.y)
         self.draw_boxes(boxes=target, color="red")
         self.click(target, after_sleep=1)
-        feature = self.wait_feature(['fast_travel_custom', 'gray_teleport', 'remove_custom', 'team_close'], time_out=10,
-                                    settle_time=0.5, raise_if_not_found=True)
-        return feature.name == 'team_close'
+        destination = self.wait_until(self._book_destination_state, time_out=10,
+                                      settle_time=0.5, raise_if_not_found=True)
+        self.next_frame()
+        if self._book_destination_state() != destination:
+            self.screenshot('book_destination_changed')
+            raise CannotFindException('Book destination changed before handoff; stopped')
+        logger.info(f'verified book destination {destination}')
+        return destination == 'team'
 
     def change_time_to_night(self):
         logger.info('change time to night')

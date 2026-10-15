@@ -1,19 +1,25 @@
+import os
 import re
 
 
-from ok import Logger
+from ok import Logger, CannotFindException
 from src.task.BaseCombatTask import BaseCombatTask, NotInCombatException, CharDeadException
 from src.task.WWOneTimeTask import WWOneTimeTask
+from src.combat.DomainCompletionGuard import DomainCompletionGuard
 
 logger = Logger.get_logger(__name__)
 
 
-class DomainTask(WWOneTimeTask, BaseCombatTask):
+class DomainTask(DomainCompletionGuard, WWOneTimeTask, BaseCombatTask):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.teleport_timeout = 100
         self.stamina_once = 0
+
+    def _stop_completed_domain_combat(self):
+        self.reset_to_false(reason='confirmed domain reward objective')
+        raise NotInCombatException('confirmed domain reward objective')
 
     def revive_action(self):
         """副本内死亡恢复：关闭弹窗 → 退出副本 → 传最近传送点回血。"""
@@ -59,6 +65,10 @@ class DomainTask(WWOneTimeTask, BaseCombatTask):
         self.realm_entry_at_heal_point = False
         while True:
             current, _, total = self.open_F2_book_and_get_stamina()
+            if current < 0:
+                raise CannotFindException('Stamina reading unavailable before domain entry')
+            if os.environ.get('OK_DAILY_NO_REFILL') == '1':
+                total = current
             if total < self.stamina_once or total < must_use or (must_use == 0 and current < self.stamina_once):
                 self.log_info('not enough stamina', notify=True)
                 self.back()
@@ -78,6 +88,27 @@ class DomainTask(WWOneTimeTask, BaseCombatTask):
             self.realm_entry_at_heal_point = True  # 恢复后站在信标上, 从 F2 直接进本
             self.sleep(1)
 
+    def open_domain_reward(self):
+        # A visible F prompt is transient; only the opened dialog permits spending.
+        def reward_open():
+            return self.has_claim_stamina() or self.has_claim()
+
+        for attempt in range(3):
+            self.next_frame()
+            if reward_open():
+                return
+            self.log_info(f'open domain reward: approach {attempt + 1}/3')
+            self.walk_to_treasure(send_f=False)
+            self.next_frame()
+            if reward_open():
+                return
+            if not self.pick_f(handle_claim=False):
+                continue
+            if self.wait_until(reward_open, time_out=3, raise_if_not_found=False):
+                return
+        self.screenshot('domain_reward_not_open')
+        raise CannotFindException('Reward dialog did not open after 3 approaches; no stamina spent')
+
     def farm_in_domain(self, must_use=0):
         """刷本循环；返回 (是否整段正常结束, 剩余 must_use)。
 
@@ -92,8 +123,9 @@ class DomainTask(WWOneTimeTask, BaseCombatTask):
             try:
                 self.combat_once()
                 self.sleep(3)
-                self.walk_to_treasure()
-                self.pick_f(handle_claim=False)
+                self.open_domain_reward()
+                if os.environ.get('OK_DAILY_NO_REFILL') == '1':
+                    self.screenshot('domain_reward_open')
             except (NotInCombatException, CharDeadException):
                 self.log_info('farm_in_domain: death recovered, exiting domain')
                 self.make_sure_in_world()
@@ -102,6 +134,8 @@ class DomainTask(WWOneTimeTask, BaseCombatTask):
             self.info_incr('used stamina', used)
             must_use -= used
             self.sleep(4)
+            if os.environ.get('OK_DAILY_NO_REFILL') == '1':
+                self.screenshot('domain_reward_result')
             if not can_continue:
                 self.log_info("used all stamina")
                 break

@@ -2,11 +2,13 @@ import re
 
 from ok import Logger
 from src.task.DomainTask import DomainTask
+from src.combat.DomainCompletionGuard import SIMULATION_REWARD_TEXT
 
 logger = Logger.get_logger(__name__)
 
 
 class SimulationTask(DomainTask):
+    domain_reward_text = SIMULATION_REWARD_TEXT
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

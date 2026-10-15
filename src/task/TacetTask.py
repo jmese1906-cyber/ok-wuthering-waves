@@ -1,3 +1,5 @@
+import os
+
 from ok import Logger
 from src.task.BaseCombatTask import BaseCombatTask, CharRevivedException
 from src.task.WWOneTimeTask import WWOneTimeTask
@@ -62,12 +64,18 @@ class TacetTask(WWOneTimeTask, BaseCombatTask):
             if current == -1:
                 self.click_relative(0.04, 0.4, after_sleep=1)
                 current, back_up, total = self.get_stamina()
+            if os.environ.get('OK_DAILY_NO_REFILL') == '1':
+                if current < 0:
+                    raise RuntimeError('Daily verification: natural stamina could not be read')
+                total = current
             if total < self.stamina_once:
                 return self.not_enough_stamina()
 
             self.open_boss_book('wuyin')
             index = config.get('Which Tacet Suppression to Farm', 1) - 1
-            self.teleport_to_tacet(index)
+            if not self.teleport_to_tacet(index):
+                self.screenshot('tacet_not_on_team_page')
+                raise RuntimeError('Tacet entry did not reach a team page; stopped before challenge input')
             self.click_team_challenge()
             while True:
                 self.wait_in_team_and_world(time_out=120)
